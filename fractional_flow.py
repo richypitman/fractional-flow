@@ -32,8 +32,6 @@ class relPermModel:
         kroe: float,
         nw: float,
         no: float,
-        muw: float,
-        muo: float,
         no_rows: int = 41,
     ) -> None:
         self.swi = swi
@@ -42,20 +40,16 @@ class relPermModel:
         self.kroe = kroe  # set default = 1 ?
         self.nw = nw
         self.no = no
-        self.muw = muw  # change as input to fw ?
-        self.muo = muo  # change as input to fw ?
         self.no_rows = no_rows
 
         # Lists to be populated
         self.sw_arr = []
         self.krw_arr = []
         self.kro_arr = []
-        self.fw_arr = []
 
-        # Values to be populated when calling bl_solution() method
-        self.swbt = None
-        self.fwbt = None
-        self.sw_avg = None
+        assert 0 < swi < 1, "Swi must be greater than 0"
+        assert 0 < 1 - swf < 1, "Swf must be greater than 0"
+        assert (1 - swi - (1 - swf)) > 0, "Swi + Swf must be greater than 0"
 
     def create_relperm_model(self) -> None:
         """Create relative permeability model"""
@@ -66,22 +60,10 @@ class relPermModel:
             [1 - swn for swn in sw_arr_norm], self.kroe, self.no
         )
 
-    def create_fw(self):
-        """Calculate fw given a relative permeability model"""
-        self.fw_arr = self.calculate_fw(self.krw_arr, self.kro_arr, self.muw, self.muo)
-
-    def bl_solution(self):
-        """Find a solution to the Buckley-Leverett equation using the Welge tangent construction method"""
-        m_arr = self.calculate_fw_gradient(self.fw_arr, self.sw_arr)
-        self.swbt, self.fwbt, self.sw_avg = self.welge_construction(
-            self.sw_arr, self.fw_arr, m_arr
-        )
-        self.rf = self.calculate_recovery(self.swi, self.sw_avg)
-
     # =============================================================================
     # Relative permeability functions
     # =============================================================================
-    def saturation_range(self, swi: float, swf: float, no_rows: int = 41) -> np.array:
+    def saturation_range(self, swi: float, swf: float, no_rows: int = 41) -> list:
         """
         Create saturation array given start and end saturations.
 
@@ -94,7 +76,7 @@ class relPermModel:
             np.array: array of saturation values
         """
 
-        sw_arr = np.linspace(swi, swf, no_rows)
+        sw_arr = np.linspace(swi, swf, no_rows).tolist()
 
         return sw_arr
 
@@ -132,16 +114,50 @@ class relPermModel:
 
         return [kre * sw_norm**n for sw_norm in sw_arr_norm]
 
+
+class fractionalFlowCurve:
+    def __init__(
+        self, sw_arr: list, krw_arr: list, kro_arr: list, muw: float, muo: float
+    ) -> None:
+        self.sw_arr = sw_arr
+        self.krw_arr = krw_arr
+        self.kro_arr = kro_arr
+        self.muw = muw
+        self.muo = muo
+
+        # Lists to be populated
+        self.fw_arr = []
+        self.m_arr = []
+
+        # Values to be updated
+        self.swi = min(sw_arr)
+        self.swf = max(sw_arr)
+        self.swbt = None
+        self.fwbt = None
+        self.sw_avg = None
+
+    def create_fw(self):
+        """Calculate fw given a relative permeability model"""
+        self.fw_arr = self.calculate_fw(self.krw_arr, self.kro_arr, self.muw, self.muo)
+
+    def perform_welge_construction(self):
+        self.m_arr = self.calculate_fw_gradient(self.fw_arr, self.sw_arr)
+        self.swbt, self.fwbt, self.sw_avg = self.welge_construction(
+            self.sw_arr, self.fw_arr, self.m_arr
+        )
+
     # =============================================================================
     # Fractional flow functions
     # =============================================================================
-    def calculate_fw(self, krw: list, kro: list, muw: float, muo: float) -> list:
+    def calculate_fw(
+        self, krw_arr: list, kro_arr: list, muw: float, muo: float
+    ) -> list:
         """
         Calculate a fractional flow curve.
 
         Args:
-            krw (list): array of relative permeability values (water)
-            kro (list): array of relative permeability values (oil)
+            krw_arr (list): array of relative permeability values (water)
+            kro_arr (list): array of relative permeability values (oil)
             muw (float): water viscosity
             muo (float): oil viscosity
 
@@ -150,8 +166,8 @@ class relPermModel:
         """
 
         fw_arr = [
-            (krw[i] / muw) / (((krw[i] / muw)) + ((kro[i] / muo)))
-            for i in range(0, len(krw))
+            (krw_arr[i] / muw) / (((krw_arr[i] / muw)) + ((kro_arr[i] / muo)))
+            for i in range(0, len(krw_arr))
         ]
 
         return fw_arr
@@ -229,9 +245,89 @@ class relPermModel:
         return (sw_avg - swi) / (1 - swi)
 
 
-if __name__ == "__main__":
-    kr = relPermModel(0.1, 0.8, 0.5, 1, 2, 2, 1, 0.35)
-    kr.create_relperm_model()
-    kr.create_fw()
-    kr.bl_solution()
-    print(kr.sw_avg, kr.rf)
+class fractionalFlowGradient:
+    def __init__(self, fw_arr: list, sw_arr: list) -> None:
+        self.fw_arr = fw_arr
+        self.sw_arr = sw_arr
+
+        # Lists to be populated
+        self.dfw_dsw_arr = []
+
+    def create_dfw_dsw(self):
+        self.dfw_dsw_arr = self.calculate_dfw_dsw(self.fw_arr, self.sw_arr)
+
+    def calculate_dfw_dsw(self, fw_arr: list, sw_arr: list) -> list:
+        """
+        Calculate the gradient of the fractional flow curve, dfw/dSw
+
+        Args:
+            fw_arr (list): array of fractional flow values
+            sw_arr (list): array of saturation values
+
+        Returns:
+            list: array of dfw/dSw values
+        """
+        dfw_dsw_arr = np.gradient(fw_arr, sw_arr).tolist()
+
+        return dfw_dsw_arr
+
+
+class shockFront:
+    def __init__(
+        self, sw_arr: list, dfw_dsw_arr: list, swi: float, swbt: float, swf: float
+    ) -> None:
+        self.sw_arr = sw_arr
+        self.dfw_dsw_arr = dfw_dsw_arr
+        self.swi = swi
+        self.swbt = swbt
+        self.swf = swf
+
+        # Lists to be populated
+        self.x_arr = []
+        self.sw_shock_arr = []
+
+    def create_shock_front(self):
+        self.x_arr, self.sw_shock_arr = self.shock_front(
+            self.sw_arr, self.dfw_dsw_arr, self.swi, self.swbt, self.swf
+        )
+
+    def shock_front(
+        self, sw_arr: list, dfw_dsw_arr: list, swi: float, swbt: float, swf: float
+    ) -> tuple:
+        """
+        Create shock front plot from gradient of the fractional flow curve, dfw/dSw
+
+        Args:
+            sw_arr (list): array of saturation values
+            dfw_dsw_arr (list): array of dfw/dSw values
+            swi (float): initial saturation
+            swbt (float): breakthrough saturation
+            swf (float): final saturation
+
+        Returns:
+            tuple: tuple with two arrays: x_arr and sw_shock_arr
+        """
+
+        # Sw until swbt (flood front distance) -> x
+        # Shock front from swbt to swi at xbt, xbt
+        # Then swi for all x until x=1
+
+        x_arr = dfw_dsw_arr.copy()
+        sw_shock_arr = sw_arr.copy()
+
+        index_bt = sw_shock_arr.index(swbt)  # Is this robust?
+        sw_shock_arr = sw_shock_arr[index_bt:]
+        sw_shock_arr.extend([swi] * 2)
+
+        xbt = x_arr[index_bt]  # @ swi
+        xmax = max(x_arr)  # @ swi
+        x_arr = x_arr[index_bt:]
+        x_arr.append(xbt)
+        x_arr.append(xmax)
+
+        x_arr.sort()
+        sw_shock_arr.sort(reverse=True)
+
+        x_arr = [((x - min(x_arr)) / (max(x_arr) - min(x_arr))) for x in x_arr]
+
+        return (x_arr, sw_shock_arr)
